@@ -18,7 +18,7 @@ use helix_core::{
     char_idx_at_visual_offset,
     chars::char_is_word,
     comment,
-    diagnostic::Severity,
+    diagnostic::{self, Severity},
     doc_formatter::TextFormat,
     encoding, find_workspace,
     graphemes::{self, next_grapheme_boundary, RevRopeGraphemes},
@@ -36,8 +36,8 @@ use helix_core::{
     text_annotations::{Overlay, TextAnnotations},
     textobject,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, Deletion, Diagnostic, LineEnding, Position, Range, Rope, RopeGraphemes,
-    RopeReader, RopeSlice, Selection, SmallVec, Syntax, Tendril, Transaction,
+    visual_offset_from_block, Deletion, Diagnostic, LineEnding, Position, Range, Rope,
+    RopeGraphemes, RopeReader, RopeSlice, Selection, SmallVec, Syntax, Tendril, Transaction,
 };
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
@@ -3664,16 +3664,20 @@ fn exit_select_mode(cx: &mut Context) {
 fn goto_first_or_last_diag_impl(cx: &mut Context, direction: Direction, min_severity: Severity) {
     let (view, doc) = current!(cx.editor);
 
-    let is_severe = |diag: &&Diagnostic| diag.severity.is_some_and(|s| s >= min_severity);
+    let is_severe = |diag: &&Diagnostic| diag.severity.unwrap_or(Severity::Hint) >= min_severity;
 
     let diagnostic = match direction {
-        Direction::Forward => doc.shown_diagnostics().find(is_severe),
-        Direction::Backward => doc.shown_diagnostics().rfind(is_severe),
+        Direction::Forward => doc.diagnostics().iter().find(is_severe),
+        Direction::Backward => doc.diagnostics().iter().rfind(is_severe),
     };
 
-    let selection = match diagnostic {
-        Some(diag) => Selection::single(diag.range.start, diag.range.end),
-        None => return,
+    let Some(diagnostic) = diagnostic else {
+        return;
+    };
+
+    let selection = match direction {
+        Direction::Forward => Selection::single(diagnostic.range.start, diagnostic.range.end),
+        Direction::Backward => Selection::single(diagnostic.range.end, diagnostic.range.start),
     };
 
     doc.set_selection(view.id, selection);
@@ -3688,18 +3692,16 @@ fn goto_last_diag(cx: &mut Context) {
     goto_first_or_last_diag_impl(cx, Direction::Backward, Severity::Hint)
 }
 fn goto_first_error(cx: &mut Context) {
-    // TODO get severity from config
     goto_first_or_last_diag_impl(cx, Direction::Forward, Severity::Error)
 }
 fn goto_last_error(cx: &mut Context) {
-    // TODO get severity from config
     goto_first_or_last_diag_impl(cx, Direction::Backward, Severity::Error)
 }
 
 fn goto_next_or_prev_diag_impl(cx: &mut Context, direction: Direction, min_severity: Severity) {
     let (view, doc) = current!(cx.editor);
 
-    let is_severe = |diag: &&Diagnostic| diag.severity.is_some_and(|s| s >= min_severity);
+    let is_severe = |diag: &&Diagnostic| diag.severity.unwrap_or(Severity::Hint) >= min_severity;
 
     let cursor_pos = doc
         .selection(view.id)
@@ -3708,20 +3710,22 @@ fn goto_next_or_prev_diag_impl(cx: &mut Context, direction: Direction, min_sever
 
     let diagnostic = match direction {
         Direction::Forward => doc
-            .shown_diagnostics()
-            .find(|diag| is_severe(diag) && (diag.range.start > cursor_pos)),
+            .diagnostics()
+            .iter()
+            .find(|diag| is_severe(diag) && (cursor_pos < diag.range.end - 1)),
         Direction::Backward => doc
-            .shown_diagnostics()
-            .rfind(|diag| is_severe(diag) && (diag.range.start < cursor_pos)),
+            .diagnostics()
+            .iter()
+            .rfind(|diag| is_severe(diag) && (cursor_pos > diag.range.start)),
     };
 
-    let selection = match diagnostic {
-        None => return goto_first_or_last_diag_impl(cx, direction, min_severity),
-        Some(diag) => match direction {
-            Direction::Forward => Selection::single(diag.range.start, diag.range.end),
-            // NOTE: the selection is reversed because we're jumping to the previous diagnostic.
-            Direction::Backward => Selection::single(diag.range.end, diag.range.start),
-        },
+    let Some(diagnostic) = diagnostic else {
+        return goto_first_or_last_diag_impl(cx, direction, min_severity);
+    };
+
+    let selection = match direction {
+        Direction::Forward => Selection::single(diagnostic.range.start, diagnostic.range.end),
+        Direction::Backward => Selection::single(diagnostic.range.end, diagnostic.range.start),
     };
     doc.set_selection(view.id, selection);
     view.diagnostics_handler
