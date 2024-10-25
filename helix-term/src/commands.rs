@@ -18,7 +18,7 @@ use helix_core::{
     char_idx_at_visual_offset,
     chars::char_is_word,
     comment,
-    diagnostic::{self, Severity},
+    diagnostic::Severity,
     doc_formatter::TextFormat,
     encoding, find_workspace,
     graphemes::{self, next_grapheme_boundary, RevRopeGraphemes},
