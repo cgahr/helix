@@ -588,6 +588,7 @@ impl MappableCommand {
         goto_next_tabstop, "goto next snippet placeholder",
         goto_prev_tabstop, "goto next snippet placeholder",
         add_word_to_personal_dictionary, "Add the word under the primary cursor to the personal dictionary for the current locale",
+        suggest_spelling_correction, "Suggest a spelling correction for the mistake under the cursor",
     );
 }
 
@@ -6584,4 +6585,103 @@ fn add_word_to_personal_dictionary(cx: &mut Context) {
     .with_line(word.into(), cx.editor);
 
     cx.push_layer(Box::new(prompt));
+}
+
+fn suggest_spelling_correction(cx: &mut Context) {
+    use helix_stdx::rope::Regex;
+    use tokio::time::Instant;
+
+    let dictionary = &cx.editor.dictionary;
+    let (view, doc) = current_ref!(cx.editor);
+    let view_id = view.id;
+    let doc_id = doc.id();
+    let text = doc.text().slice(..);
+
+    let selection = doc.selection(view.id).primary();
+    let direction = selection.direction();
+    let cursor = selection.cursor(text);
+    let line_no = selection.cursor_line(text);
+    let line = text.line(line_no);
+    let line_start = text.line_to_char(line_no);
+
+    #[repr(transparent)]
+    struct Suggestion(String);
+
+    impl ui::menu::Item for Suggestion {
+        type Data = ();
+
+        fn format(&self, _data: &Self::Data) -> tui::widgets::Row {
+            self.0.as_str().into()
+        }
+    }
+
+    // This is a hack around not storing the spelling errors as diagnostics.
+    // Re-find the spelling mistake under the cursor:
+    static WORDS: Lazy<Regex> = Lazy::new(|| Regex::new(r#"[0-9A-Z]*(['-]?[a-z]+)*"#).unwrap());
+    let current_mistake = WORDS.find_iter(line.regex_input_at(..)).find_map(|match_| {
+        let start = text.byte_to_char(match_.start());
+        let end = text.byte_to_char(match_.end());
+        let word = Cow::from(line.slice(start..end));
+        let range = start + line_start..end + line_start;
+        if !dictionary.check(&word) && range.contains(&cursor) {
+            Some((word, range))
+        } else {
+            None
+        }
+    });
+
+    let Some((word, range)) = current_mistake else {
+        cx.editor
+            .set_error("No spelling mistake under the primary cursor");
+        return;
+    };
+
+    let mut suggestions = Vec::new();
+    let start_time = Instant::now();
+    dictionary.suggest(&word, &mut suggestions);
+    let end_time = Instant::now();
+    log::info!(
+        "found {} suggestion{} for '{}' in {:?}",
+        suggestions.len(),
+        if suggestions.len() == 1 { "" } else { "s" },
+        &word,
+        end_time.duration_since(start_time)
+    );
+
+    if suggestions.is_empty() {
+        cx.editor
+            .set_error(format!("No suggestions for '{}' found", &word));
+        return;
+    }
+
+    // SAFETY: `Suggestion` is a newtype wrapper so it has the same layout as the wrapped String.
+    let suggestions = unsafe { std::mem::transmute::<Vec<String>, Vec<Suggestion>>(suggestions) };
+
+    let mut menu = ui::Menu::new(suggestions, (), move |editor, action, event| {
+        if event != PromptEvent::Validate {
+            return;
+        }
+
+        // Because we `move_down` below, this is always Some:
+        let suggestion = &action.unwrap().0;
+
+        let view = view_mut!(editor, view_id);
+        let doc = doc_mut!(editor, &doc_id);
+
+        let new_range = Range::new(range.start, range.start + suggestion.chars().count())
+            .with_direction(direction);
+        let transaction = Transaction::change(
+            doc.text(),
+            [(range.start, range.end, Some(suggestion.into()))].into_iter(),
+        )
+        .with_selection(Selection::from(new_range));
+
+        doc.apply(&transaction, view_id);
+        doc.append_changes_to_history(view);
+    });
+    menu.move_down();
+
+    let popup = Popup::new("suggestion", menu).with_scrollbar(false);
+
+    cx.push_layer(Box::new(popup));
 }
