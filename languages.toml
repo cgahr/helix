@@ -4033,3 +4033,12 @@ indent = { tab-width = 4, unit = "    " }
 [[grammar]]
 name = "nginx"
 source = { git = "https://gitlab.com/joncoole/tree-sitter-nginx", rev = "b4b61db443602b69410ab469c122c01b1e685aa0" }
+
+[[language]]
+name = "man-pages"
+scope = "source.man"
+file-types = [ ]
+
+[[grammar]]
+name = "man-pages"
+source = { git = "https://github.com/ribru17/tree-sitter-man", rev = "27ce854917bc130e5c40565f8f514c4ab2451b6a" }
