@@ -170,7 +170,7 @@ fn check_text(
                         end: text.byte_to_char(match_.end()),
                     }),
                     message: format!("Possible spelling issue '{word}'"),
-                    severity: Some(Severity::Error),
+                    severity: Some(Severity::Hint),
                     code: None,
                     provider: PROVIDER,
                     tags: Default::default(),
